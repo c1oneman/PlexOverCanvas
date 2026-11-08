@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Stream Benchmark</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:sans-serif;background:#0a0a0f;color:#e0e0e0;padding:8px;font-size:14px;max-width:960px;margin:0 auto}
+h1{font-size:1.2rem;color:#00d4ff;text-align:center;margin-bottom:4px}
+.sub{text-align:center;color:#888;font-size:.75rem;margin-bottom:8px}
+.p{background:#0f0f1a;border:1px solid #2a2a3a;border-radius:8px;padding:8px;margin-bottom:6px}
+h2{font-size:.7rem;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:.3px}
+.row{display:flex;gap:6px;align-items:center;margin:3px 0;flex-wrap:wrap}
+.inp{padding:7px;background:#050510;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:.8rem;min-width:0}
+.btn{padding:8px 12px;border:none;border-radius:6px;font-size:.8rem;font-weight:600;cursor:pointer;background:#00507a;color:#fff}
+.btn:disabled{opacity:.4;cursor:default}
+.btn-s{background:#333;border:1px solid #555}
+label{font-size:.75rem;color:#aaa}
+canvas{width:100%;max-width:480px;display:block;background:#000;border-radius:6px;margin:0 auto}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th,td{padding:4px 6px;border-bottom:1px solid #222;text-align:right;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left;color:#aaa;font-weight:normal}
+th{color:#00d4ff;font-weight:600}
+.good{color:#4ade80}.warn{color:#fbbf24}.bad{color:#f87171}
+#log{font-family:monospace;font-size:.7rem;color:#888;max-height:160px;overflow:auto;white-space:pre-wrap}
+.note{font-size:.7rem;color:#777;margin-top:6px;line-height:1.4}
+</style>
+</head>
+<body>
+<h1>Stream Benchmark</h1>
+<p class="sub">Start-up time, A/V offset and end-to-end latency for each audio transport</p>
+
+<div class="p">
+  <div class="row">
+    <label>Source <input class="inp" id="src" value="sync" size="12" title="sync, test, or plex:&lt;ratingKey&gt;"></label>
+    <label>Mode
+      <select class="inp" id="mode">
+        <option value="compare" selected>Compare both</option>
+        <option value="muxed">Muxed</option>
+        <option value="split">Split (legacy)</option>
+      </select>
+    </label>
+    <label>Quality
+      <select class="inp" id="quality">
+        <option value="360">360p</option>
+        <option value="480" selected>480p</option>
+        <option value="720">720p</option>
+      </select>
+    </label>
+    <label>A/V sync ms <input class="inp" id="avsync" type="number" placeholder="default" min="0" max="2000" style="width:80px" title="Muxed mode: how long the server holds video back. Blank = server default (AV_SYNC_MS)."></label>
+    <label>Seconds <input class="inp" id="secs" type="number" value="20" min="5" max="300" style="width:60px"></label>
+    <button class="btn" id="run">Run</button>
+    <button class="btn btn-s" id="save" disabled>Save report</button>
+  </div>
+  <div class="note">
+    The <b>sync</b> source flashes one of eight bars and plays a matching-pitch beep at the start of every
+    second. The page watches the canvas and the audio output and pairs each flash with its beep.
+    A/V offset is positive when audio is late. Latency compares against the server's clock, so it is only
+    meaningful when the server runs on this machine (or clocks are synced). Other sources report start-up only.
+  </div>
+</div>
+
+<div class="p"><canvas id="nc" width="854" height="480"></canvas></div>
+
+<div class="p">
+  <h2>Results</h2>
+  <div id="results"><div class="note">No runs yet.</div></div>
+</div>
+
+<div class="p">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<script src="/player/jsmpeg.min.js"></script>
+<script src="/player/stream.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var nc = $('nc');
+  var runs = [];
+  var FREQS = [500, 600, 700, 800, 900, 1000, 1100, 1200];
+  var probe = document.createElement('canvas');
+  probe.width = 8; probe.height = 1;
+  var pctx = probe.getContext('2d', { willReadFrequently: true });
+
+  // Runs on the audio thread: a Goertzel filter per beep pitch over the last
+  // 512 samples, evaluated every 128-sample block. Posts the context time of
+  // each beep onset.
+  var BEEP_WORKLET = URL.createObjectURL(new Blob([[
+    "registerProcessor('beep-detector', class extends AudioWorkletProcessor {",
+    "  constructor(o) { super(); this.freqs = o.processorOptions.freqs; this.n = 512;",
+    "    this.buf = new Float32Array(this.n); this.pos = 0; this.on = false; this.lastAt = -1; }",
+    "  process(inputs) {",
+    "    var ch = inputs[0] && inputs[0][0]; if (!ch) return true;",
+    "    for (var i = 0; i < ch.length; i++) { this.buf[this.pos] = ch[i]; this.pos = (this.pos + 1) % this.n; }",
+    "    var best = -1, bestA = 0;",
+    "    for (var f = 0; f < this.freqs.length; f++) {",
+    "      var c = 2 * Math.cos(2 * Math.PI * this.freqs[f] / sampleRate), s1 = 0, s2 = 0;",
+    "      for (var j = 0; j < this.n; j++) { var s0 = this.buf[(this.pos + j) % this.n] + c * s1 - s2; s2 = s1; s1 = s0; }",
+    "      var a = Math.sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) / (this.n / 2);",
+    "      if (a > bestA) { bestA = a; best = f; }",
+    "    }",
+    "    if (bestA > 0.1) {",
+    "      if (!this.on && currentTime - this.lastAt > 0.4) { this.port.postMessage({ time: currentTime, idx: best }); this.lastAt = currentTime; }",
+    "      this.on = true;",
+    "    } else this.on = false;",
+    "    return true;",
+    "  }",
+    "});",
+  ].join('\n')], { type: 'application/javascript' }));
+
+  function log(msg) {
+    var l = $('log');
+    l.textContent += (performance.now() / 1000).toFixed(2) + '  ' + msg + '\n';
+    l.scrollTop = l.scrollHeight;
+  }
+  function wall() { return performance.timeOrigin + performance.now(); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // ============================================================
+  // One benchmark run
+  // ============================================================
+  // Must be entered synchronously from the click so the AudioContext may start.
+  function runOnce(mode, src, quality, secs, avsync) {
+    var benchId = Math.random().toString(36).slice(2);
+    var metrics = {};
+    var flashes = [], beeps = [];
+    var frames = 0, firstFrameWall = 0;
+    var lastFlash = -1, flashOff = true;
+    var na = new Audio(); // a fresh element per run: createMediaElementSource works once per element
+    var ctx, latencyS = 0;
+
+    var stream = CanvasStream({
+      canvas: nc, audio: na, src: src, mode: mode, quality: quality, bench: benchId, avsync: avsync,
+      onStatus: function (t, isErr) { log('[' + mode + '] ' + (isErr ? 'ERROR ' : '') + t); },
+      onMetric: function (name, v) { metrics[name] = v; log('[' + mode + '] ' + name + ' = ' + v); },
+      onFrame: function () {
+        frames++;
+        var now = wall();
+        if (!firstFrameWall) firstFrameWall = now;
+        pctx.drawImage(nc, 0, 0, nc.width, nc.height, 0, 0, 8, 1);
+        var px = pctx.getImageData(0, 0, 8, 1).data, best = -1, bestV = 0;
+        for (var i = 0; i < 8; i++) if (px[i * 4] > bestV) { bestV = px[i * 4]; best = i; }
+        if (bestV > 128) {
+          if (flashOff || best !== lastFlash) flashes.push({ t: now, idx: best });
+          flashOff = false; lastFlash = best;
+        } else flashOff = true;
+      },
+    });
+
+    // Tap the audio as it reaches the speakers.
+    var tap = null;
+    if (mode === 'muxed') {
+      ctx = stream.player && stream.player.audioOut && stream.player.audioOut.context;
+      tap = stream.audioNode();
+    } else {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      tap = ctx.createMediaElementSource(na);
+      tap.connect(ctx.destination);
+    }
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    var detector = null;
+    if (ctx && tap) {
+      latencyS = (ctx.baseLatency || 0) + (ctx.outputLatency || 0);
+      ctx.audioWorklet.addModule(BEEP_WORKLET).then(function () {
+        detector = new AudioWorkletNode(ctx, 'beep-detector', { processorOptions: { freqs: FREQS } });
+        var sink = ctx.createGain();
+        sink.gain.value = 0;
+        tap.connect(detector);
+        detector.connect(sink);
+        sink.connect(ctx.destination);
+        detector.port.onmessage = function (e) {
+          // Map the block's context time to wall time at the speaker.
+          var ts = ctx.getOutputTimestamp();
+          var t = performance.timeOrigin + ts.performanceTime + (e.data.time - ts.contextTime) * 1000;
+          beeps.push({ t: t, idx: e.data.idx });
+        };
+      }).catch(function (e) { log('Audio detector unavailable: ' + e.message); });
+    }
+
+    return sleep(secs * 1000).then(function () {
+      if (detector) { detector.port.onmessage = null; detector.disconnect(); }
+      var fps = firstFrameWall ? frames / ((wall() - firstFrameWall) / 1000) : 0;
+      stream.stop();
+      if (ctx && mode === 'split') ctx.close();
+      return fetch('/api/bench/' + benchId).then(function (r) { return r.json(); }).then(function (spawn) {
+        return analyse(mode, src, metrics, spawn, flashes, beeps, fps, frames, latencyS * 1000);
+      });
+    });
+  }
+
+  // Map an event at wall time t showing bar idx to the source second it came
+  // from: the latest second k (k ≡ idx mod 8) that started before t, with
+  // 500 ms of slack for clock jitter. Assumes latency is under ~7 s.
+  function sourceSecond(t, idx, spawnAt) {
+    var k = Math.floor((t - spawnAt + 500) / 1000);
+    while (k >= 0 && ((k % 8) + 8) % 8 !== idx) k--;
+    return k;
+  }
+
+  function stats(xs) {
+    if (!xs.length) return null;
+    var s = xs.slice().sort(function (a, b) { return a - b; });
+    var mean = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+    var sd = Math.sqrt(xs.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / xs.length);
+    return { n: xs.length, mean: mean, median: s[Math.floor(s.length / 2)], min: s[0], max: s[s.length - 1], sd: sd };
+  }
+
+  // Least-squares slope of offset against time, in ms per minute.
+  function drift(pairs) {
+    if (pairs.length < 3) return null;
+    var n = pairs.length, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    pairs.forEach(function (p) { var x = p.k / 60; sx += x; sy += p.offset; sxx += x * x; sxy += x * p.offset; });
+    return (n * sxy - sx * sy) / (n * sxx - sx * sx);
+  }
+
+  function analyse(mode, src, metrics, spawn, flashes, beeps, fps, frames, outLatency) {
+    var r = { mode: mode, src: src, metrics: metrics, fps: fps, frames: frames, flashes: flashes.length, beeps: beeps.length, outputLatencyMs: outLatency };
+    if (src !== 'sync') return r;
+    var vSpawn = spawn.videoSpawnAt, aSpawn = mode === 'split' ? spawn.audioSpawnAt : spawn.videoSpawnAt;
+    var byK = {};
+    flashes.forEach(function (f) {
+      var k = vSpawn ? sourceSecond(f.t, f.idx, vSpawn) : -1;
+      if (k >= 0) (byK[k] = byK[k] || {}).flash = f.t;
+    });
+    beeps.forEach(function (b) {
+      var k = aSpawn ? sourceSecond(b.t, b.idx, aSpawn) : -1;
+      if (k >= 0) (byK[k] = byK[k] || {}).beep = b.t;
+    });
+    var pairs = [], vLat = [], aLat = [];
+    Object.keys(byK).forEach(function (k) {
+      k = +k;
+      var e = byK[k];
+      if (e.flash) vLat.push(e.flash - (vSpawn + k * 1000));
+      if (e.beep) aLat.push(e.beep - (aSpawn + k * 1000));
+      if (e.flash && e.beep) pairs.push({ k: k, offset: e.beep - e.flash });
+    });
+    // Skip the first two seconds: both decoders are still settling.
+    var steady = pairs.filter(function (p) { return p.k >= 2; });
+    r.pairs = pairs;
+    r.offset = stats(steady.map(function (p) { return p.offset; }));
+    r.driftMsPerMin = drift(steady);
+    r.videoLatency = stats(vLat);
+    r.audioLatency = stats(aLat);
+    return r;
+  }
+
+  // ============================================================
+  // Rendering
+  // ============================================================
+  function ms(v) { return v == null || !isFinite(v) ? '—' : Math.round(v) + ' ms'; }
+  function cls(v, good, warn) { if (v == null) return ''; v = Math.abs(v); return v <= good ? 'good' : v <= warn ? 'warn' : 'bad'; }
+
+  function render() {
+    if (!runs.length) return;
+    var rows = [
+      ['Server A/V sync setting', function (r) { return r.mode === 'muxed' ? ms(r.metrics.avSyncMs) : 'n/a'; }],
+      ['Source resolve', function (r) { return ms(r.metrics.resolveMs); }],
+      ['ffmpeg first byte', function (r) { return ms(r.metrics.ffmpegFirstByteMs); }],
+      ['WebSocket open', function (r) { return ms(r.metrics.wsOpenMs); }],
+      ['First video frame', function (r) { return ms(r.metrics.firstFrameMs); }],
+      ['First audio', function (r) { return ms(r.metrics.firstAudioDecodeMs != null ? r.metrics.firstAudioDecodeMs : r.metrics.firstAudioPlayingMs); }],
+      ['Average FPS', function (r) { return r.fps ? r.fps.toFixed(1) : '—'; }],
+      ['A/V offset (median)', function (r) { return r.offset ? ['<span class="' + cls(r.offset.median, 45, 120) + '">' + ms(r.offset.median) + '</span>'] : '—'; }],
+      ['A/V offset (min / max)', function (r) { return r.offset ? ms(r.offset.min) + ' / ' + ms(r.offset.max) : '—'; }],
+      ['A/V offset jitter (sd)', function (r) { return r.offset ? ms(r.offset.sd) : '—'; }],
+      ['A/V drift', function (r) { return r.driftMsPerMin != null ? Math.round(r.driftMsPerMin) + ' ms/min' : '—'; }],
+      ['Video latency (median)', function (r) { return r.videoLatency ? ms(r.videoLatency.median) : '—'; }],
+      ['Audio latency (median)', function (r) { return r.audioLatency ? ['<span class="' + cls(r.audioLatency.median, 500, 1500) + '">' + ms(r.audioLatency.median) + '</span>'] : '—'; }],
+      ['Flashes / beeps / pairs', function (r) { return r.flashes + ' / ' + r.beeps + ' / ' + (r.pairs ? r.pairs.length : '—'); }],
+      ['Audio output latency', function (r) { return ms(r.outputLatencyMs); }],
+    ];
+    var h = '<table><tr><th></th>' + runs.map(function (r, i) { return '<th>#' + (i + 1) + ' ' + r.mode + ' · ' + r.src + '</th>'; }).join('') + '</tr>';
+    rows.forEach(function (row) {
+      h += '<tr><td>' + row[0] + '</td>' + runs.map(function (r) {
+        var v = row[1](r);
+        return '<td>' + (Array.isArray(v) ? v[0] : String(v).replace(/</g, '&lt;')) + '</td>';
+      }).join('') + '</tr>';
+    });
+    $('results').innerHTML = h + '</table>';
+  }
+
+  // ============================================================
+  // Controls
+  // ============================================================
+  $('run').onclick = function () {
+    var mode = $('mode').value, src = $('src').value.trim() || 'sync';
+    var avsync = $('avsync').value.trim();
+    var quality = $('quality').value, secs = Math.max(5, parseInt($('secs').value) || 20);
+    var modes = mode === 'compare' ? ['muxed', 'split'] : [mode];
+    $('run').disabled = true;
+    log('Running ' + modes.join(' then ') + ' for ' + secs + 's each on "' + src + '"');
+    // The first run starts inside the click. Later runs rely on the page's
+    // sticky user activation, which lets new AudioContexts start.
+    var chain = runOnce(modes[0], src, quality, secs, avsync).then(function (r) { runs.push(r); render(); });
+    if (modes[1]) {
+      chain = chain.then(function () { return sleep(1000); })
+        .then(function () { return runOnce(modes[1], src, quality, secs, avsync); })
+        .then(function (r) { runs.push(r); render(); });
+    }
+    chain.catch(function (e) { log('ERROR ' + e.message); }).then(function () {
+      $('run').disabled = false;
+      $('save').disabled = !runs.length;
+      log('Done.');
+    });
+  };
+
+  $('save').onclick = function () {
+    fetch('/api/bench-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ at: new Date().toISOString(), userAgent: navigator.userAgent, runs: runs }),
+    }).then(function (r) { return r.json(); }).then(function (j) { log('Saved ' + j.file); });
+  };
+})();
+</script>
+</body>
+</html>

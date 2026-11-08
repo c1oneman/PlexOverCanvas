@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Browser Probe</title>
+<style>
+body{background:#0a0a0f;color:#e0e0e0;font-family:sans-serif;padding:15px;font-size:14px;max-width:720px;margin:0 auto}
+h1{color:#00d4ff;text-align:center;font-size:1.2rem}
+.ok{color:#4ade80}
+.fail{color:#f87171}
+.block{background:#0f0f1a;border:1px solid #2a2a3a;border-radius:8px;padding:10px;margin:8px 0}
+.mono{font-family:monospace;font-size:.7rem;color:#888;word-break:break-all}
+.r{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #141420;font-size:.78rem}
+.r:last-child{border-bottom:none}
+.l{color:#999}
+.btn{width:100%;padding:14px;background:#003366;border:none;border-radius:8px;color:#fff;font-size:.95rem;font-weight:700;cursor:pointer;margin:4px 0}
+.btn:active{opacity:.6}
+</style>
+</head>
+<body>
+
+<h1>Browser Probe</h1>
+
+<div class="block" style="text-align:center;font-weight:600;"><span id="st">...</span></div>
+
+<div class="block"><b>User-Agent</b><br><span id="ua" class="mono">...</span></div>
+<div class="block"><b>Engine</b><br><span id="eng" class="mono">...</span></div>
+<div class="block"><b>APIs</b><br><div id="apis"></div></div>
+<div class="block"><b>Codecs</b><br><span id="codecs" class="mono">...</span></div>
+<div class="block"><b>WebGL</b><br><span id="webgl" class="mono">...</span></div>
+
+<div class="block">
+  <b>&lt;video&gt; playback</b>
+  <p class="mono">Plays a generated clip in a &lt;video&gt; element and checks that frames advance. A browser that pauses or freezes &lt;video&gt; shows up here.</p>
+  <button class="btn" id="btnVideo">TEST VIDEO ELEMENT</button>
+  <div id="videoResult" class="mono"></div>
+</div>
+
+<div class="block">
+  <b>Microphone</b>
+  <button class="btn" id="btnMic">TEST MICROPHONE</button>
+  <div id="micResult" class="mono"></div>
+</div>
+
+<button class="btn" id="btnReport">GENERATE REPORT</button>
+<button class="btn" id="btnSend" style="background:#1a3a1a">SEND REPORT TO SERVER</button>
+<div id="reportBox" class="mono" style="display:none;background:#050510;border-radius:6px;padding:8px;margin-top:4px;max-height:400px;overflow-y:auto;white-space:pre-wrap"></div>
+
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var results = { videoElement: null, microphone: null };
+
+function setStatus(text, color) { $('st').textContent = text; if (color) $('st').style.color = color; }
+setStatus('Testing...', '#4ade80');
+
+// ===== UA / engine =====
+var uaStr = navigator.userAgent;
+$('ua').textContent = uaStr;
+var chromeVer = (uaStr.match(/Chrome\/(\d+)/) || [])[1] || '?';
+var webkitVer = (uaStr.match(/AppleWebKit\/(\d+)/) || [])[1] || '?';
+var embedded = /QtWebEngine|wv\)|WebView/i.test(uaStr);
+$('eng').textContent =
+  'Chromium: ' + chromeVer + ' | WebKit: ' + webkitVer +
+  ' | Embedded: ' + embedded +
+  ' | Platform: ' + (navigator.platform || '?') +
+  ' | Cores: ' + (navigator.hardwareConcurrency || '?') +
+  ' | RAM: ' + (navigator.deviceMemory || '?') + ' GB' +
+  ' | Touch: ' + (navigator.maxTouchPoints || 0) +
+  ' | Screen: ' + screen.width + 'x' + screen.height;
+
+// ===== APIs =====
+var apisList = [
+  ['WebSocket', typeof WebSocket !== 'undefined'],
+  ['Canvas 2D', !!document.createElement('canvas').getContext],
+  ['createImageBitmap', typeof createImageBitmap !== 'undefined'],
+  ['WebAssembly', typeof WebAssembly !== 'undefined'],
+  ['AudioContext', typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined'],
+  ['MediaSource (MSE)', typeof MediaSource !== 'undefined'],
+  ['VideoDecoder (WebCodecs)', typeof VideoDecoder !== 'undefined'],
+  ['VideoFrame', typeof VideoFrame !== 'undefined'],
+  ['MediaStreamTrackProcessor', typeof MediaStreamTrackProcessor !== 'undefined'],
+  ['requestVideoFrameCallback', typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype],
+  ['canvas.captureStream', typeof HTMLCanvasElement !== 'undefined' && 'captureStream' in HTMLCanvasElement.prototype],
+  ['RTCPeerConnection', typeof RTCPeerConnection !== 'undefined'],
+  ['MediaRecorder', typeof MediaRecorder !== 'undefined'],
+  ['getUserMedia', !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)],
+  ['PictureInPicture', !!document.pictureInPictureEnabled],
+  ['Fullscreen', !!(document.fullscreenEnabled || document.webkitFullscreenEnabled)],
+  ['ServiceWorker', 'serviceWorker' in navigator],
+];
+$('apis').innerHTML = apisList.map(function (a) {
+  return '<div class="r"><span class="l">' + a[0] + '</span><span class="' + (a[1] ? 'ok' : 'fail') + '">' + (a[1] ? 'YES' : 'NO') + '</span></div>';
+}).join('');
+
+// ===== Codecs =====
+var codecs = {};
+try {
+  var v = document.createElement('video');
+  var probes = {
+    'H.264': 'video/mp4; codecs="avc1.42E01E"',
+    'H.265': 'video/mp4; codecs="hev1.1.6.L120.90"',
+    'VP8': 'video/webm; codecs="vp8"',
+    'VP9': 'video/webm; codecs="vp9"',
+    'AV1': 'video/mp4; codecs="av01.0.05M.08"',
+  };
+  Object.keys(probes).forEach(function (k) {
+    codecs[k] = v.canPlayType(probes[k]) || 'no';
+    if (typeof MediaSource !== 'undefined') codecs[k] += '/MSE:' + MediaSource.isTypeSupported(probes[k]);
+  });
+  $('codecs').textContent = Object.keys(codecs).map(function (k) { return k + ': ' + codecs[k]; }).join(' | ');
+} catch (e) { $('codecs').textContent = 'Error: ' + e.message; }
+
+// ===== WebGL =====
+try {
+  var c = document.createElement('canvas');
+  var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+  if (gl) {
+    var di = gl.getExtension('WEBGL_debug_renderer_info');
+    var w = 'WebGL: OK | WebGL2: ' + !!document.createElement('canvas').getContext('webgl2');
+    if (di) w += ' | GPU: ' + gl.getParameter(di.UNMASKED_RENDERER_WEBGL);
+    $('webgl').textContent = w;
+  } else $('webgl').textContent = 'WebGL: NOT available';
+} catch (e) { $('webgl').textContent = 'WebGL Error: ' + e.message; }
+
+setStatus('Diagnostic complete', '#4ade80');
+
+// ===== <video> playback test =====
+// Records a few seconds of an animated canvas into a blob, plays it back in a
+// <video> element and samples currentTime to see whether playback advances.
+$('btnVideo').onclick = function () {
+  var out = $('videoResult');
+  if (typeof MediaRecorder === 'undefined' || !('captureStream' in HTMLCanvasElement.prototype)) {
+    out.textContent = 'Skipped: needs MediaRecorder + canvas.captureStream to build a test clip';
+    return;
+  }
+  out.textContent = 'Recording test clip...';
+  var cv = document.createElement('canvas'); cv.width = 160; cv.height = 90;
+  var cx = cv.getContext('2d'), n = 0;
+  var draw = setInterval(function () { cx.fillStyle = 'hsl(' + (n++ * 12 % 360) + ',80%,50%)'; cx.fillRect(0, 0, 160, 90); }, 33);
+  var rec = new MediaRecorder(cv.captureStream(30)), chunks = [];
+  rec.ondataavailable = function (e) { chunks.push(e.data); };
+  rec.onstop = function () {
+    clearInterval(draw);
+    var vid = document.createElement('video');
+    vid.muted = true; vid.playsInline = true; vid.width = 160;
+    vid.src = URL.createObjectURL(new Blob(chunks, { type: rec.mimeType }));
+    out.textContent = 'Playing...';
+    out.appendChild(vid);
+    vid.play().then(function () {
+      var t0 = vid.currentTime;
+      setTimeout(function () {
+        var advanced = vid.currentTime - t0;
+        results.videoElement = { advancedSeconds: +advanced.toFixed(2), paused: vid.paused };
+        out.firstChild.textContent = advanced > 0.5 && !vid.paused
+          ? 'OK: <video> advanced ' + advanced.toFixed(2) + 's in 1.5s'
+          : 'RESTRICTED: <video> advanced ' + advanced.toFixed(2) + 's, paused=' + vid.paused;
+      }, 1500);
+    }).catch(function (e) {
+      results.videoElement = { error: e.name };
+      out.firstChild.textContent = 'play() rejected: ' + e.name;
+    });
+  };
+  rec.start();
+  setTimeout(function () { rec.stop(); }, 3000);
+};
+
+// ===== Microphone =====
+$('btnMic').onclick = function () {
+  var mr = $('micResult');
+  mr.textContent = 'Testing...';
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    results.microphone = 'unavailable';
+    mr.textContent = 'getUserMedia not available';
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    results.microphone = 'ok';
+    mr.textContent = 'Microphone OK: ' + (stream.getAudioTracks()[0].label || '?');
+    stream.getTracks().forEach(function (t) { t.stop(); });
+  }).catch(function (err) {
+    results.microphone = err.name;
+    mr.textContent = err.name + ': ' + err.message.substring(0, 80);
+  });
+};
+
+// ===== Report =====
+function buildReport() {
+  return {
+    timestamp: new Date().toISOString(),
+    userAgent: uaStr,
+    chromium: chromeVer,
+    webkit: webkitVer,
+    embedded: embedded,
+    platform: navigator.platform || '?',
+    cores: navigator.hardwareConcurrency || null,
+    ramGb: navigator.deviceMemory || null,
+    screen: screen.width + 'x' + screen.height,
+    touchPoints: navigator.maxTouchPoints || 0,
+    apis: apisList.reduce(function (o, a) { o[a[0]] = a[1]; return o; }, {}),
+    codecs: codecs,
+    webgl: $('webgl').textContent,
+    videoElement: results.videoElement,
+    microphone: results.microphone,
+  };
+}
+
+$('btnReport').onclick = function () {
+  $('reportBox').style.display = 'block';
+  $('reportBox').textContent = JSON.stringify(buildReport(), null, 2);
+};
+
+$('btnSend').onclick = function () {
+  var btn = this;
+  fetch('/api/probe-report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildReport()),
+  }).then(function (r) { btn.textContent = r.ok ? 'REPORT SAVED ON SERVER' : 'SEND FAILED (' + r.status + ')'; })
+    .catch(function () { btn.textContent = 'SEND FAILED'; });
+};
+</script>
+</body>
+</html>

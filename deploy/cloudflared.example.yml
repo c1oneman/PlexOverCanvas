@@ -1,0 +1,10 @@
+# Copy to cloudflared/config.yml. Create the tunnel and DNS record with:
+#   cloudflared tunnel login
+#   cloudflared tunnel create my-tunnel
+#   cloudflared tunnel route dns my-tunnel watch.example.com
+tunnel: <tunnel id>
+credentials-file: /etc/cloudflared/<tunnel id>.json
+ingress:
+  - hostname: watch.example.com
+    service: http://127.0.0.1:8742
+  - service: http_status:404

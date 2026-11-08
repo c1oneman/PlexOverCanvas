@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<title>Canvas</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- Sign in -->
+<section class="signin" id="signin" hidden>
+  <div class="signin-card">
+    <div class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l10.5-6.5z"/></svg></div>
+    <h1>Canvas</h1>
+    <p>Your Plex library, streamed straight to a canvas.</p>
+    <button class="btn btn-primary" id="btnLogin">Sign in with Plex</button>
+    <div class="wait" id="signinWait" hidden>Finish signing in in the Plex window…</div>
+    <div class="err" id="signinErr" hidden></div>
+    <div class="signin-foot"><a href="/bench/">Benchmark</a> · <a href="/probe/">Browser probe</a></div>
+  </div>
+</section>
+
+<!-- App shell -->
+<div id="shell" hidden>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l10.5-6.5z"/></svg></span>
+      <span>Canvas</span>
+    </a>
+    <nav class="nav" id="nav"></nav>
+    <div class="topbar-right">
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search">
+      </label>
+      <button class="avatar-btn" id="avatar" aria-label="Account"></button>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+
+<!-- Player -->
+<section class="player" id="player" hidden>
+  <div class="screen" id="screen"></div>
+  <div class="p-center">
+    <div class="spinner" id="pSpin" hidden></div>
+    <button class="big-play" id="pBig" hidden aria-label="Play">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+    </button>
+  </div>
+  <div class="p-msg" id="pMsg" hidden></div>
+  <div class="chrome">
+    <div class="p-top">
+      <button class="icon-btn" id="pClose" aria-label="Back" title="Back (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="titles"><b id="pTitle"></b><span id="pSub"></span></div>
+    </div>
+    <div class="p-bottom">
+      <div class="seek" id="seek">
+        <div class="seek-track"><div class="seek-fill" id="seekFill"></div><div class="seek-knob" id="seekKnob"></div></div>
+        <div class="seek-tip" id="seekTip">0:00</div>
+      </div>
+      <div class="p-controls">
+        <button class="icon-btn" id="pPlay" aria-label="Pause" title="Play/Pause (Space)"></button>
+        <button class="icon-btn" id="pBack" aria-label="Back 10 seconds" title="Back 10s (←)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text></svg>
+        </button>
+        <button class="icon-btn" id="pFwd" aria-label="Forward 30 seconds" title="Forward 30s (→)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7.5" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">30</text></svg>
+        </button>
+        <div class="vol">
+          <button class="icon-btn" id="pMute" aria-label="Mute" title="Mute (M)"></button>
+          <input type="range" id="pVol" min="0" max="100" value="100" aria-label="Volume">
+        </div>
+        <div class="p-time"><b id="pCur">0:00</b> / <span id="pDur">0:00</span></div>
+        <div class="p-spacer"></div>
+        <span class="p-stats" id="pStats"></span>
+        <div class="p-settings">
+          <button class="icon-btn" id="pGear" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <div class="menu" id="pMenu" hidden></div>
+        </div>
+        <button class="icon-btn" id="pFull" aria-label="Fullscreen" title="Fullscreen (F)"></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="jsmpeg.min.js"></script>
+<script src="stream.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+# Canvas + Cloudflare Tunnel. Runs next to Plex on the same machine.
+#   cp .env.example .env   # set ALLOWED_PLEX_USERS
+#   docker compose up -d --build
+services:
+  canvas:
+    build: ..
+    container_name: canvas
+    restart: unless-stopped
+    # Host networking: reaches Plex on this machine, and cloudflared reaches
+    # Canvas on 127.0.0.1 without publishing a port to the LAN.
+    network_mode: host
+    environment:
+      HOST: ${HOST:-127.0.0.1}
+      PORT: 8742
+      ALLOWED_PLEX_USERS: ${ALLOWED_PLEX_USERS}
+      # Plex runs on this machine: talk to it directly over loopback. Its
+      # *.plex.direct HTTPS addresses reset connections made from the same host.
+      PLEX_URL: ${PLEX_URL:-http://127.0.0.1:32400}
+      AV_SYNC_MS: ${AV_SYNC_MS:-0}
+    volumes:
+      - ./data:/app/data
+      - ./bench-reports:/app/bench-reports
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: canvas-tunnel
+    restart: unless-stopped
+    network_mode: host
+    # cloudflared/ holds config.yml and the tunnel's credentials JSON
+    # (from `cloudflared tunnel create`); see config.example.yml.
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - canvas
